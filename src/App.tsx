@@ -4,7 +4,6 @@
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import * as XLSX from 'xlsx';
 import { 
   Volume2, VolumeX, Plus, Trash2, Users, Search, 
   Download, RefreshCw, Shuffle, Settings, X, Check,
@@ -199,10 +198,17 @@ export default function App() {
       "Tên Học Sinh": s.name, 
       "Điểm": s.score 
     }));
-    const ws = XLSX.utils.json_to_sheet(dataToExport);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "KetQua");
-    XLSX.writeFile(wb, `KetQua_Lop_${className}.xlsx`);
+    
+    const jsonString = JSON.stringify(dataToExport, null, 2);
+    const blob = new Blob([jsonString], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `KetQua_Lop_${className}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   const handleSetTimer = () => { setTimerSetting(inputTimer); showAlert("Thành công", `Đã cài đặt thời gian: ${inputTimer} giây`); };
@@ -363,7 +369,7 @@ export default function App() {
                     }`}
                   >
                     <div className="flex flex-col min-w-0 flex-1 pr-2">
-                      <span className="font-bold text-sm truncate">{student.name}</span>
+                      <span className="font-bold text-sm truncate" title={student.name}>{student.name}</span>
                       <span className={`text-xs mt-0.5 ${isActive ? 'text-blue-100' : 'text-slate-500'}`}>{student.score} điểm</span>
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
@@ -449,7 +455,7 @@ export default function App() {
                     <div key={st.id} className="flex justify-between items-center px-3 py-2 bg-slate-50 rounded-lg border border-slate-100">
                       <div className="flex items-center gap-2">
                         <span className="text-lg">{idx === 0 ? '🥇' : idx === 1 ? '🥈' : '🥉'}</span>
-                        <span className="font-semibold text-sm text-slate-700 truncate max-w-[120px]">{st.name}</span>
+                        <span className="font-semibold text-sm text-slate-700 truncate max-w-[120px]" title={st.name}>{st.name}</span>
                       </div>
                       <span className="text-blue-600 font-bold text-sm bg-blue-50 px-2 py-0.5 rounded">{st.score}</span>
                     </div>
@@ -648,7 +654,7 @@ export default function App() {
 
             <div className="grid grid-cols-2 gap-3 mb-6 shrink-0">
               <button onClick={() => { handleExportResults(); setShowBatchInputModal(false); }} className="bg-green-50 hover:bg-green-100 text-green-700 border border-green-200 py-2.5 px-3 rounded-xl text-sm font-semibold transition-colors flex justify-center items-center gap-2">
-                <Download size={16} /> Xuất Excel
+                <Download size={16} /> Xuất JSON
               </button>
               <button onClick={() => { handleClearAllStudents(); setShowBatchInputModal(false); }} className="bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 py-2.5 px-3 rounded-xl text-sm font-semibold transition-colors flex justify-center items-center gap-2">
                 <Trash2 size={16} /> Xóa tất cả
