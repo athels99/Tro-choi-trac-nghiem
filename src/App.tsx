@@ -229,10 +229,23 @@ export default function App() {
     try {
       if (isLoginMode) {
         const { error } = await supabase.auth.signInWithPassword({ email: authEmail, password: authPassword });
-        if (error) throw error;
+        if (error) {
+          if (error.message.includes('Invalid login credentials')) {
+            throw new Error('Email hoặc mật khẩu không chính xác.');
+          }
+          throw error;
+        }
       } else {
         const { error } = await supabase.auth.signUp({ email: authEmail, password: authPassword });
-        if (error) throw error;
+        if (error) {
+          if (error.message.includes('User already registered')) {
+            throw new Error('Email này đã được đăng ký. Vui lòng sử dụng email khác hoặc đăng nhập.');
+          }
+          if (error.message.includes('Password should be at least 6 characters')) {
+            throw new Error('Mật khẩu phải có ít nhất 6 ký tự.');
+          }
+          throw error;
+        }
         showAlert("Thành công", "Đăng ký thành công! Bạn có thể đăng nhập ngay bây giờ.");
         setIsLoginMode(true);
       }
