@@ -7,7 +7,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Volume2, VolumeX, Plus, Trash2, Users, Search, 
   Download, RefreshCw, Shuffle, Settings, X, Check,
-  Trophy, Clock, Target, Save, LogOut
+  Trophy, Clock, Target, Save
 } from 'lucide-react';
 import { supabase } from './lib/supabase';
 
@@ -67,46 +67,22 @@ const generateInitialQuestions = () => {
 };
 
 export default function App() {
-  // --- AUTH STATE ---
-  const [session, setSession] = useState<any>(null);
-  const [isAuthLoading, setIsAuthLoading] = useState(true);
-  const [authEmail, setAuthEmail] = useState('');
-  const [authPassword, setAuthPassword] = useState('');
-  const [isLoginMode, setIsLoginMode] = useState(true);
-  const [authError, setAuthError] = useState('');
-
-  // --- APP STATE ---
+  // --- STATE ---
   const [classData, setClassData] = useState<Record<string, any[]>>({});
   const [className, setClassName] = useState("");
   const [classesList, setClassesList] = useState<any[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   
   const students = classData[className] || [];
-
-  // Listen for auth changes
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setIsAuthLoading(false);
-    });
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-    });
-
-    return () => subscription.unsubscribe();
-  }, []);
   
   // Fetch initial data from Supabase
   useEffect(() => {
-    if (!session) return;
-
     const fetchInitialData = async () => {
       try {
         setIsLoading(true);
         
         // Fetch Settings
-        const { data: settingsData } = await supabase.from('settings').select('*').eq('user_id', session.user.id).single();
+        const { data: settingsData } = await supabase.from('settings').select('*').single();
         if (settingsData) {
           setTimerSetting(settingsData.timer_setting || 10);
           setInputTimer(settingsData.timer_setting || 10);
@@ -114,7 +90,7 @@ export default function App() {
         }
 
         // Fetch Classes
-        const { data: classesData, error: classesError } = await supabase.from('classes').select('*').eq('user_id', session.user.id).order('created_at', { ascending: true });
+        const { data: classesData, error: classesError } = await supabase.from('classes').select('*').order('created_at', { ascending: true });
         if (classesError) throw classesError;
         
         if (classesData && classesData.length > 0) {
@@ -122,7 +98,7 @@ export default function App() {
           const firstClassName = classesData[0].name;
           setClassName(firstClassName);
           
-          // Fetch Students (filtered by class_id later, but RLS ensures we only get our students)
+          // Fetch Students
           const { data: studentsData, error: studentsError } = await supabase.from('students').select('*');
           if (studentsError) throw studentsError;
           
@@ -133,7 +109,7 @@ export default function App() {
           setClassData(newClassData);
         } else {
           // If no classes exist, create default '9B'
-          const { data: newClass } = await supabase.from('classes').insert([{ name: '9B', user_id: session.user.id }]).select().single();
+          const { data: newClass } = await supabase.from('classes').insert([{ name: '9B' }]).select().single();
           if (newClass) {
             setClassesList([newClass]);
             setClassName('9B');
@@ -142,7 +118,7 @@ export default function App() {
         }
 
         // Fetch Questions
-        const { data: questionsData, error: questionsError } = await supabase.from('questions').select('*').eq('user_id', session.user.id).order('display_number', { ascending: true });
+        const { data: questionsData, error: questionsError } = await supabase.from('questions').select('*').order('display_number', { ascending: true });
         if (questionsError) throw questionsError;
         
         if (questionsData && questionsData.length > 0) {
@@ -171,9 +147,7 @@ export default function App() {
             displayNumber: q.display_number,
             text: q.text,
             options: q.options,
-            correctOption: q.correct_option,
-            isAnswered: q.is_answered,
-            answeredBy: q.answered_by
+            correctOption: q.correct_option
           }));
           setQuestions(formattedQuestions);
         } else {
@@ -183,10 +157,7 @@ export default function App() {
             display_number: q.displayNumber,
             text: q.text,
             options: q.options,
-            correct_option: q.correctOption,
-            is_answered: q.isAnswered,
-            answered_by: q.answeredBy,
-            user_id: session.user.id
+            correct_option: q.correctOption
           }));
           const { data: insertedQs } = await supabase.from('questions').insert(dbQuestions).select();
           if (insertedQs) {
@@ -195,12 +166,25 @@ export default function App() {
                 displayNumber: q.display_number,
                 text: q.text,
                 options: q.options,
-                correctOption: q.correct_option,
-                isAnswered: q.is_answered,
-                answeredBy: q.answered_by
+                correctOption: q.correct_option
              }));
              setQuestions(formattedQs);
           }
+        }
+
+        // Fetch Student Answers (Graceful degradation if table doesn't exist yet)
+        try {
+          const { data: answersData, error: answersError } = await supabase.from('student_answers').select('*');
+          if (!answersError && answersData) {
+            const answersMap: Record<string, string[]> = {};
+            answersData.forEach(ans => {
+              if (!answersMap[ans.student_id]) answersMap[ans.student_id] = [];
+              answersMap[ans.student_id].push(ans.question_id);
+            });
+            setStudentAnswers(answersMap);
+          }
+        } catch (err) {
+          console.warn("student_answers table might not exist yet.");
         }
       } catch (error) {
         console.error("Error fetching data:", error);
@@ -211,7 +195,7 @@ export default function App() {
     };
 
     fetchInitialData();
-  }, [session]);
+  }, []);
 
   // Update setStudents to also update Supabase (for local state updates that don't need immediate DB sync, we'll handle DB sync separately)
   const setStudents = useCallback((action: any) => {
@@ -235,6 +219,7 @@ export default function App() {
   const [batchInputText, setBatchInputText] = useState("");
 
   const [questions, setQuestions] = useState<any[]>([]);
+  const [studentAnswers, setStudentAnswers] = useState<Record<string, string[]>>({});
   const [timerSetting, setTimerSetting] = useState(10);
   const [inputTimer, setInputTimer] = useState(10);
   
@@ -282,7 +267,7 @@ export default function App() {
       const trimmedName = newClassNameInput.trim();
       if (!classData[trimmedName]) {
         try {
-          const { data, error } = await supabase.from('classes').insert([{ name: trimmedName, user_id: session.user.id }]).select().single();
+          const { data, error } = await supabase.from('classes').insert([{ name: trimmedName }]).select().single();
           if (error) throw error;
           if (data) {
             setClassesList(prev => [...prev, data]);
@@ -335,8 +320,7 @@ export default function App() {
       const { data, error } = await supabase.from('students').insert([{ 
         class_id: currentClass.id, 
         name: studentNameInput.trim(), 
-        score: 0,
-        answered_questions: []
+        score: 0 
       }]).select().single();
       
       if (error) throw error;
@@ -374,8 +358,7 @@ export default function App() {
         const newStudentsData = newNames.map(name => ({
           class_id: currentClass.id,
           name: name.trim(),
-          score: 0,
-          answered_questions: []
+          score: 0
         }));
         
         const { data, error } = await supabase.from('students').insert(newStudentsData).select();
@@ -436,7 +419,7 @@ export default function App() {
 
   const handleSetTimer = async () => { 
     try {
-      const { error } = await supabase.from('settings').upsert({ user_id: session.user.id, timer_setting: inputTimer, target_score: targetScore }, { onConflict: 'user_id' });
+      const { error } = await supabase.from('settings').upsert({ id: 1, timer_setting: inputTimer, target_score: targetScore });
       if (error) throw error;
       setTimerSetting(inputTimer); 
       showAlert("Thành công", `Đã cài đặt thời gian: ${inputTimer} giây`); 
@@ -463,17 +446,14 @@ export default function App() {
   };
 
   const handleResetQuestions = () => { 
-    const currentClass = classesList.find(c => c.name === className);
-    if (!currentClass) return;
-
-    showConfirm("Xác nhận", "Làm mới trạng thái tất cả câu hỏi của lớp này?", async () => {
+    showConfirm("Xác nhận", "Làm mới trạng thái tất cả câu hỏi cho mọi học sinh?", async () => {
       try {
-        const { error } = await supabase.from('students').update({ answered_questions: [] }).eq('class_id', currentClass.id);
+        const { error } = await supabase.from('student_answers').delete().neq('id', '00000000-0000-0000-0000-000000000000'); // Delete all
         if (error) throw error;
-        setStudents(students.map(s => ({...s, answered_questions: []})));
+        setStudentAnswers({});
       } catch (error) {
         console.error("Error resetting questions:", error);
-        showAlert("Lỗi", "Không thể làm mới câu hỏi.");
+        showAlert("Lỗi", "Không thể làm mới câu hỏi. Vui lòng đảm bảo bảng student_answers đã được tạo.");
       }
     }); 
   };
@@ -489,8 +469,8 @@ export default function App() {
 
   const openQuestion = (question: any) => {
     if (!activeStudentId) { showAlert("Thông báo", "Vui lòng chọn một học sinh trước khi chọn câu hỏi!"); return; }
-    const activeStudent = students.find(s => s.id === activeStudentId);
-    if (activeStudent?.answered_questions?.includes(question.id)) return;
+    const hasAnswered = studentAnswers[activeStudentId]?.includes(question.id);
+    if (hasAnswered) return;
     
     setActiveQuestion(question);
     setTimeLeft(timerSetting);
@@ -505,29 +485,37 @@ export default function App() {
     const isCorrect = selectedIndex === activeQuestion.correctOption;
     
     try {
-      const student = students.find(s => s.id === activeStudentId);
-      if (!student) throw new Error("No active student");
-
-      const newScore = isCorrect ? student.score + 10 : student.score;
-      const newAnswered = [...(student.answered_questions || []), activeQuestion.id];
-
       if (isCorrect) {
         sounds.correct(); sounds.congrats(); setShowResultFeedback('correct');
+        
+        // Update student score in Supabase
+        const student = students.find(s => s.id === activeStudentId);
+        if (student) {
+          const newScore = student.score + 10;
+          await supabase.from('students').update({ score: newScore }).eq('id', activeStudentId);
+          setStudents(students.map(s => s.id === activeStudentId ? { ...s, score: newScore } : s));
+        }
       } else {
         sounds.wrong(); setShowResultFeedback('wrong');
       }
       
-      // Update student in Supabase
-      await supabase.from('students').update({ 
-        score: newScore,
-        answered_questions: newAnswered
-      }).eq('id', activeStudentId);
-      
-      setStudents(students.map(s => s.id === activeStudentId ? { ...s, score: newScore, answered_questions: newAnswered } : s));
+      // Record answer in student_answers table
+      if (activeStudentId) {
+        await supabase.from('student_answers').insert({
+          student_id: activeStudentId,
+          question_id: activeQuestion.id,
+          is_correct: isCorrect
+        });
+        
+        setStudentAnswers(prev => ({
+          ...prev,
+          [activeStudentId]: [...(prev[activeStudentId] || []), activeQuestion.id]
+        }));
+      }
       
     } catch (error) {
       console.error("Error updating answer:", error);
-      showAlert("Lỗi", "Không thể lưu kết quả câu trả lời.");
+      showAlert("Lỗi", "Không thể lưu kết quả câu trả lời. Vui lòng đảm bảo bảng student_answers đã được tạo.");
     }
 
     setTimeout(() => closeQuestionModal(), 2000);
@@ -541,20 +529,24 @@ export default function App() {
       setIsTimerRunning(false);
       sounds.wrong(); setShowResultFeedback('wrong');
       
-      const student = students.find(s => s.id === activeStudentId);
-      if (student) {
-        const newAnswered = [...(student.answered_questions || []), activeQuestion.id];
-        supabase.from('students').update({ 
-          answered_questions: newAnswered 
-        }).eq('id', activeStudentId).then(() => {
-          setStudents(students.map(s => s.id === activeStudentId ? { ...s, answered_questions: newAnswered } : s));
+      // Record timeout as wrong answer in student_answers
+      if (activeStudentId && activeQuestion) {
+        supabase.from('student_answers').insert({
+          student_id: activeStudentId,
+          question_id: activeQuestion.id,
+          is_correct: false
+        }).then(() => {
+          setStudentAnswers(prev => ({
+            ...prev,
+            [activeStudentId]: [...(prev[activeStudentId] || []), activeQuestion.id]
+          }));
         }).catch(err => console.error("Error updating timeout:", err));
       }
       
       setTimeout(() => closeQuestionModal(), 2000);
     }
     return () => clearInterval(timer);
-  }, [isTimerRunning, timeLeft, activeQuestion, activeStudentId, students]);
+  }, [isTimerRunning, timeLeft, activeQuestion, activeStudentId]);
 
   const saveEditedQuestion = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -585,87 +577,6 @@ export default function App() {
     if (!scoreGroups[s.score]) scoreGroups[s.score] = [];
     scoreGroups[s.score].push(s.id);
   });
-
-  const handleAuth = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthError('');
-    try {
-      if (isLoginMode) {
-        const { error } = await supabase.auth.signInWithPassword({ email: authEmail, password: authPassword });
-        if (error) throw error;
-      } else {
-        const { error } = await supabase.auth.signUp({ email: authEmail, password: authPassword });
-        if (error) throw error;
-        showAlert("Thành công", "Đăng ký thành công! Vui lòng đăng nhập.");
-        setIsLoginMode(true);
-      }
-    } catch (err: any) {
-      setAuthError(err.message || "Đã xảy ra lỗi xác thực.");
-    }
-  };
-
-  const handleLogout = async () => {
-    await supabase.auth.signOut();
-  };
-
-  if (isAuthLoading) {
-    return (
-      <div className="h-screen w-full flex flex-col items-center justify-center bg-slate-50">
-        <div className="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-blue-600 mb-4"></div>
-        <p className="text-slate-600 font-semibold">Đang kiểm tra đăng nhập...</p>
-      </div>
-    );
-  }
-
-  if (!session) {
-    return (
-      <div className="h-screen w-full flex items-center justify-center bg-slate-100 p-4">
-        <div className="bg-white p-8 rounded-3xl shadow-xl w-full max-w-md border border-slate-200">
-          <div className="flex justify-center mb-6">
-            <Trophy className="text-yellow-500" size={48} />
-          </div>
-          <h2 className="text-2xl font-black text-center text-slate-800 mb-6 uppercase tracking-tight">
-            {isLoginMode ? 'Đăng nhập' : 'Đăng ký tài khoản'}
-          </h2>
-          {authError && (
-            <div className="bg-red-50 text-red-600 p-3 rounded-xl text-sm font-medium mb-4 border border-red-200">
-              {authError}
-            </div>
-          )}
-          <form onSubmit={handleAuth} className="space-y-4">
-            <div>
-              <label className="block text-sm font-bold text-slate-700 mb-1">Email</label>
-              <input 
-                type="email" 
-                value={authEmail} 
-                onChange={(e) => setAuthEmail(e.target.value)} 
-                className="w-full px-4 py-2 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" 
-                required 
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-bold text-slate-700 mb-1">Mật khẩu</label>
-              <input 
-                type="password" 
-                value={authPassword} 
-                onChange={(e) => setAuthPassword(e.target.value)} 
-                className="w-full px-4 py-2 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" 
-                required 
-              />
-            </div>
-            <button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-xl shadow-md transition-colors mt-2">
-              {isLoginMode ? 'Đăng nhập' : 'Đăng ký'}
-            </button>
-          </form>
-          <div className="mt-6 text-center">
-            <button onClick={() => setIsLoginMode(!isLoginMode)} className="text-blue-600 hover:underline text-sm font-semibold">
-              {isLoginMode ? 'Chưa có tài khoản? Đăng ký ngay' : 'Đã có tài khoản? Đăng nhập'}
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   if (isLoading) {
     return (
@@ -839,9 +750,6 @@ export default function App() {
                  <button onClick={() => setIsManagementMode(true)} className="bg-slate-800 hover:bg-slate-900 text-white px-3 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition-colors flex items-center gap-1.5 shrink-0 whitespace-nowrap ml-auto">
                    <Settings size={14} /> Quản lý
                  </button>
-                 <button onClick={handleLogout} className="bg-red-50 hover:bg-red-100 text-red-600 px-3 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition-colors flex items-center gap-1.5 shrink-0 whitespace-nowrap">
-                   <LogOut size={14} /> Đăng xuất
-                 </button>
                </div>
             </div>
 
@@ -873,19 +781,19 @@ export default function App() {
             <div className="flex-1 p-4 sm:p-6 flex items-center justify-center overflow-y-auto custom-scrollbar bg-slate-50/50">
               <div className="grid grid-cols-6 sm:grid-cols-8 md:grid-cols-10 gap-3 sm:gap-4 justify-items-center w-full max-w-5xl mx-auto">
                 {questions.map((q) => {
-                  const activeStudent = students.find(s => s.id === activeStudentId);
-                  const isAnswered = activeStudent?.answered_questions?.includes(q.id) || false;
+                  const hasAnswered = activeStudentId ? studentAnswers[activeStudentId]?.includes(q.id) : false;
                   return (
                   <button
                     key={q.id}
                     onClick={() => openQuestion(q)}
                     onMouseEnter={sounds.hover}
-                    disabled={isAnswered}
+                    disabled={hasAnswered || !activeStudentId}
                     className={`
                       w-14 h-14 sm:w-16 sm:h-16 rounded-2xl flex items-center justify-center transition-all duration-200 relative overflow-hidden group
-                      ${isAnswered 
+                      ${hasAnswered 
                         ? 'bg-slate-100 border border-slate-200 cursor-not-allowed opacity-50 grayscale' 
                         : 'bg-white border-2 border-blue-100 hover:border-blue-500 hover:-translate-y-1 hover:shadow-md cursor-pointer shadow-sm'}
+                      ${!activeStudentId ? 'opacity-70 cursor-not-allowed hover:-translate-y-0 hover:border-blue-100' : ''}
                     `}
                   >
                     <img 
@@ -1100,7 +1008,7 @@ export default function App() {
           <div className="flex flex-col md:flex-row flex-1 overflow-hidden">
             <div className="w-full md:w-[300px] border-r border-slate-200 overflow-y-auto bg-white custom-scrollbar p-4">
               <div className="grid grid-cols-4 md:grid-cols-1 gap-2">
-                {[...questions].sort((a,b) => a.displayNumber - b.displayNumber).map(q => (
+                {questions.sort((a,b) => a.displayNumber - b.displayNumber).map(q => (
                   <button 
                     key={q.id} 
                     onClick={() => setEditingQuestion({...q})} 
@@ -1119,7 +1027,7 @@ export default function App() {
               {editingQuestion ? (
                 <form onSubmit={saveEditedQuestion} className="max-w-3xl mx-auto bg-white p-8 rounded-3xl shadow-sm border border-slate-200">
                   <h3 className="text-2xl font-bold text-slate-800 mb-6 flex items-center gap-2">
-                    <span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-lg text-lg">Câu {editingQuestion.displayNumber}</span>
+                    <span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-lg text-lg">Câu {editingQuestion.id}</span>
                     Chỉnh sửa nội dung
                   </h3>
                   
