@@ -9,6 +9,7 @@ import {
   Download, RefreshCw, Shuffle, Settings, X, Check,
   Trophy, Clock, Target, Save
 } from 'lucide-react';
+import { supabase } from './lib/supabase';
 
 // --- TIỆN ÍCH TẠO ÂM THANH (Web Audio API) ---
 let audioCtx: AudioContext | null = null;
@@ -67,10 +68,108 @@ const generateInitialQuestions = () => {
 
 export default function App() {
   // --- STATE ---
-  const [classData, setClassData] = useState<Record<string, any[]>>({ "9B": [] });
-  const [className, setClassName] = useState("9B");
+  const [classData, setClassData] = useState<Record<string, any[]>>({});
+  const [className, setClassName] = useState("");
+  const [classesList, setClassesList] = useState<any[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   
   const students = classData[className] || [];
+  
+  // Fetch initial data from Supabase
+  useEffect(() => {
+    const fetchInitialData = async () => {
+      try {
+        setIsLoading(true);
+        
+        // Fetch Settings
+        const { data: settingsData } = await supabase.from('settings').select('*').single();
+        if (settingsData) {
+          setTimerSetting(settingsData.timer_setting || 10);
+          setInputTimer(settingsData.timer_setting || 10);
+          setTargetScore(settingsData.target_score || 100);
+        }
+
+        // Fetch Classes
+        const { data: classesData, error: classesError } = await supabase.from('classes').select('*').order('created_at', { ascending: true });
+        if (classesError) throw classesError;
+        
+        if (classesData && classesData.length > 0) {
+          setClassesList(classesData);
+          const firstClassName = classesData[0].name;
+          setClassName(firstClassName);
+          
+          // Fetch Students
+          const { data: studentsData, error: studentsError } = await supabase.from('students').select('*');
+          if (studentsError) throw studentsError;
+          
+          const newClassData: Record<string, any[]> = {};
+          classesData.forEach(c => {
+            newClassData[c.name] = studentsData?.filter(s => s.class_id === c.id) || [];
+          });
+          setClassData(newClassData);
+        } else {
+          // If no classes exist, create default '9B'
+          const { data: newClass } = await supabase.from('classes').insert([{ name: '9B' }]).select().single();
+          if (newClass) {
+            setClassesList([newClass]);
+            setClassName('9B');
+            setClassData({ '9B': [] });
+          }
+        }
+
+        // Fetch Questions
+        const { data: questionsData, error: questionsError } = await supabase.from('questions').select('*').order('display_number', { ascending: true });
+        if (questionsError) throw questionsError;
+        
+        if (questionsData && questionsData.length > 0) {
+          // Map snake_case to camelCase for frontend
+          const formattedQuestions = questionsData.map(q => ({
+            id: q.id,
+            displayNumber: q.display_number,
+            text: q.text,
+            options: q.options,
+            correctOption: q.correct_option,
+            isAnswered: q.is_answered,
+            answeredBy: q.answered_by
+          }));
+          setQuestions(formattedQuestions);
+        } else {
+          // Initialize questions if empty
+          const initialQs = generateInitialQuestions();
+          const dbQuestions = initialQs.map(q => ({
+            display_number: q.displayNumber,
+            text: q.text,
+            options: q.options,
+            correct_option: q.correctOption,
+            is_answered: q.isAnswered,
+            answered_by: q.answeredBy
+          }));
+          const { data: insertedQs } = await supabase.from('questions').insert(dbQuestions).select();
+          if (insertedQs) {
+             const formattedQs = insertedQs.map(q => ({
+                id: q.id,
+                displayNumber: q.display_number,
+                text: q.text,
+                options: q.options,
+                correctOption: q.correct_option,
+                isAnswered: q.is_answered,
+                answeredBy: q.answered_by
+             }));
+             setQuestions(formattedQs);
+          }
+        }
+      } catch (error) {
+        console.error("Error fetching data:", error);
+        showAlert("Lỗi", "Không thể tải dữ liệu từ máy chủ.");
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchInitialData();
+  }, []);
+
+  // Update setStudents to also update Supabase (for local state updates that don't need immediate DB sync, we'll handle DB sync separately)
   const setStudents = useCallback((action: any) => {
     setClassData(prev => {
       const currentList = prev[className] || [];
@@ -91,7 +190,7 @@ export default function App() {
   const [showBatchInputModal, setShowBatchInputModal] = useState(false);
   const [batchInputText, setBatchInputText] = useState("");
 
-  const [questions, setQuestions] = useState(generateInitialQuestions());
+  const [questions, setQuestions] = useState<any[]>([]);
   const [timerSetting, setTimerSetting] = useState(10);
   const [inputTimer, setInputTimer] = useState(10);
   
@@ -134,11 +233,25 @@ export default function App() {
     setAddClassModalOpen(true);
   };
 
-  const confirmAddClass = () => {
+  const confirmAddClass = async () => {
     if (newClassNameInput && newClassNameInput.trim() !== "") {
       const trimmedName = newClassNameInput.trim();
-      if (!classData[trimmedName]) setClassData(prev => ({ ...prev, [trimmedName]: [] }));
-      setClassName(trimmedName);
+      if (!classData[trimmedName]) {
+        try {
+          const { data, error } = await supabase.from('classes').insert([{ name: trimmedName }]).select().single();
+          if (error) throw error;
+          if (data) {
+            setClassesList(prev => [...prev, data]);
+            setClassData(prev => ({ ...prev, [trimmedName]: [] }));
+            setClassName(trimmedName);
+          }
+        } catch (error) {
+          console.error("Error adding class:", error);
+          showAlert("Lỗi", "Không thể thêm lớp mới.");
+        }
+      } else {
+        setClassName(trimmedName);
+      }
     }
     setAddClassModalOpen(false);
   };
@@ -148,44 +261,108 @@ export default function App() {
       showAlert("Không thể xóa", "Phải giữ lại ít nhất 1 lớp trong danh sách!"); 
       return; 
     }
-    showConfirm("Xác nhận xóa", `Bạn có chắc chắn muốn XÓA LỚP "${className}"?`, () => {
-      const newData = { ...classData };
-      delete newData[className];
-      setClassData(newData);
-      setClassName(Object.keys(newData)[0]);
+    showConfirm("Xác nhận xóa", `Bạn có chắc chắn muốn XÓA LỚP "${className}"?`, async () => {
+      try {
+        const classToDelete = classesList.find(c => c.name === className);
+        if (classToDelete) {
+          const { error } = await supabase.from('classes').delete().eq('id', classToDelete.id);
+          if (error) throw error;
+        }
+        
+        const newData = { ...classData };
+        delete newData[className];
+        setClassData(newData);
+        const remainingClasses = classesList.filter(c => c.name !== className);
+        setClassesList(remainingClasses);
+        setClassName(Object.keys(newData)[0]);
+      } catch (error) {
+        console.error("Error deleting class:", error);
+        showAlert("Lỗi", "Không thể xóa lớp.");
+      }
     });
   };
 
-  const handleAddStudent = () => {
+  const handleAddStudent = async () => {
     if (!studentNameInput.trim()) return;
-    const newStudent = { id: crypto.randomUUID(), name: studentNameInput.trim(), score: 0 };
-    setStudents([...students, newStudent]);
-    setStudentNameInput('');
-    if (!activeStudentId) setActiveStudentId(newStudent.id);
+    const currentClass = classesList.find(c => c.name === className);
+    if (!currentClass) return;
+
+    try {
+      const { data, error } = await supabase.from('students').insert([{ 
+        class_id: currentClass.id, 
+        name: studentNameInput.trim(), 
+        score: 0 
+      }]).select().single();
+      
+      if (error) throw error;
+      
+      if (data) {
+        setStudents([...students, data]);
+        setStudentNameInput('');
+        if (!activeStudentId) setActiveStudentId(data.id);
+      }
+    } catch (error) {
+      console.error("Error adding student:", error);
+      showAlert("Lỗi", "Không thể thêm học sinh.");
+    }
   };
 
-  const handleRemoveStudent = (id: string) => {
-    setStudents(students.filter(s => s.id !== id));
-    if (activeStudentId === id) setActiveStudentId(null);
+  const handleRemoveStudent = async (id: string) => {
+    try {
+      const { error } = await supabase.from('students').delete().eq('id', id);
+      if (error) throw error;
+      
+      setStudents(students.filter(s => s.id !== id));
+      if (activeStudentId === id) setActiveStudentId(null);
+    } catch (error) {
+      console.error("Error removing student:", error);
+      showAlert("Lỗi", "Không thể xóa học sinh.");
+    }
   };
 
-  const handleSaveBatchInput = () => {
+  const handleSaveBatchInput = async () => {
     const newNames = batchInputText.split(/\r?\n/).filter(name => name.trim() !== '');
-    if (newNames.length > 0) {
-      const newStudents = newNames.map(name => ({
-        id: crypto.randomUUID(), name: name.trim(), score: 0
-      }));
-      setStudents((prev: any) => [...prev, ...newStudents]);
-      showAlert("Thành công", `Đã thêm thành công ${newStudents.length} học sinh!`);
+    const currentClass = classesList.find(c => c.name === className);
+    
+    if (newNames.length > 0 && currentClass) {
+      try {
+        const newStudentsData = newNames.map(name => ({
+          class_id: currentClass.id,
+          name: name.trim(),
+          score: 0
+        }));
+        
+        const { data, error } = await supabase.from('students').insert(newStudentsData).select();
+        if (error) throw error;
+        
+        if (data) {
+          setStudents((prev: any) => [...prev, ...data]);
+          showAlert("Thành công", `Đã thêm thành công ${data.length} học sinh!`);
+        }
+      } catch (error) {
+        console.error("Error batch adding students:", error);
+        showAlert("Lỗi", "Không thể thêm danh sách học sinh.");
+      }
     }
     setShowBatchInputModal(false);
     setBatchInputText("");
   };
 
   const handleClearAllStudents = () => {
-    showConfirm("Xác nhận xóa", `Xóa toàn bộ danh sách học sinh của lớp ${className}?`, () => {
-      setStudents([]);
-      setActiveStudentId(null);
+    const currentClass = classesList.find(c => c.name === className);
+    if (!currentClass) return;
+
+    showConfirm("Xác nhận xóa", `Xóa toàn bộ danh sách học sinh của lớp ${className}?`, async () => {
+      try {
+        const { error } = await supabase.from('students').delete().eq('class_id', currentClass.id);
+        if (error) throw error;
+        
+        setStudents([]);
+        setActiveStudentId(null);
+      } catch (error) {
+        console.error("Error clearing students:", error);
+        showAlert("Lỗi", "Không thể xóa danh sách học sinh.");
+      }
     });
   };
 
@@ -211,9 +388,46 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
-  const handleSetTimer = () => { setTimerSetting(inputTimer); showAlert("Thành công", `Đã cài đặt thời gian: ${inputTimer} giây`); };
-  const handleResetScores = () => { showConfirm("Xác nhận", "Bạn có chắc muốn làm mới điểm số?", () => setStudents(students.map(s => ({...s, score: 0})))); };
-  const handleResetQuestions = () => { showConfirm("Xác nhận", "Làm mới trạng thái tất cả câu hỏi?", () => setQuestions(questions.map(q => ({...q, isAnswered: false, answeredBy: null})))); };
+  const handleSetTimer = async () => { 
+    try {
+      const { error } = await supabase.from('settings').upsert({ id: 1, timer_setting: inputTimer, target_score: targetScore });
+      if (error) throw error;
+      setTimerSetting(inputTimer); 
+      showAlert("Thành công", `Đã cài đặt thời gian: ${inputTimer} giây`); 
+    } catch (error) {
+      console.error("Error saving timer:", error);
+      showAlert("Lỗi", "Không thể lưu cài đặt thời gian.");
+    }
+  };
+
+  const handleResetScores = () => { 
+    const currentClass = classesList.find(c => c.name === className);
+    if (!currentClass) return;
+
+    showConfirm("Xác nhận", "Bạn có chắc muốn làm mới điểm số?", async () => {
+      try {
+        const { error } = await supabase.from('students').update({ score: 0 }).eq('class_id', currentClass.id);
+        if (error) throw error;
+        setStudents(students.map(s => ({...s, score: 0})));
+      } catch (error) {
+        console.error("Error resetting scores:", error);
+        showAlert("Lỗi", "Không thể làm mới điểm số.");
+      }
+    }); 
+  };
+
+  const handleResetQuestions = () => { 
+    showConfirm("Xác nhận", "Làm mới trạng thái tất cả câu hỏi?", async () => {
+      try {
+        const { error } = await supabase.from('questions').update({ is_answered: false, answered_by: null }).neq('id', '00000000-0000-0000-0000-000000000000'); // Update all
+        if (error) throw error;
+        setQuestions(questions.map(q => ({...q, isAnswered: false, answeredBy: null})));
+      } catch (error) {
+        console.error("Error resetting questions:", error);
+        showAlert("Lỗi", "Không thể làm mới câu hỏi.");
+      }
+    }); 
+  };
 
   const handleShuffleQuestions = () => {
     let shuffled = [...questions];
@@ -235,17 +449,37 @@ export default function App() {
 
   const closeQuestionModal = () => { setActiveQuestion(null); setIsTimerRunning(false); setShowResultFeedback(null); };
 
-  const handleAnswerSelection = (selectedIndex: number) => {
+  const handleAnswerSelection = async (selectedIndex: number) => {
     setIsTimerRunning(false);
     const isCorrect = selectedIndex === activeQuestion.correctOption;
     
-    if (isCorrect) {
-      sounds.correct(); sounds.congrats(); setShowResultFeedback('correct');
-      setStudents(students.map(s => s.id === activeStudentId ? { ...s, score: s.score + 10 } : s));
-    } else {
-      sounds.wrong(); setShowResultFeedback('wrong');
+    try {
+      if (isCorrect) {
+        sounds.correct(); sounds.congrats(); setShowResultFeedback('correct');
+        
+        // Update student score in Supabase
+        const student = students.find(s => s.id === activeStudentId);
+        if (student) {
+          const newScore = student.score + 10;
+          await supabase.from('students').update({ score: newScore }).eq('id', activeStudentId);
+          setStudents(students.map(s => s.id === activeStudentId ? { ...s, score: newScore } : s));
+        }
+      } else {
+        sounds.wrong(); setShowResultFeedback('wrong');
+      }
+      
+      // Update question status in Supabase
+      await supabase.from('questions').update({ 
+        is_answered: true, 
+        answered_by: activeStudentId 
+      }).eq('id', activeQuestion.id);
+      
+      setQuestions(questions.map(q => q.id === activeQuestion.id ? { ...q, isAnswered: true, answeredBy: activeStudentId } : q));
+    } catch (error) {
+      console.error("Error updating answer:", error);
+      showAlert("Lỗi", "Không thể lưu kết quả câu trả lời.");
     }
-    setQuestions(questions.map(q => q.id === activeQuestion.id ? { ...q, isAnswered: true, answeredBy: activeStudentId } : q));
+
     setTimeout(() => closeQuestionModal(), 2000);
   };
 
@@ -256,17 +490,38 @@ export default function App() {
     } else if (timeLeft === 0 && isTimerRunning) {
       setIsTimerRunning(false);
       sounds.wrong(); setShowResultFeedback('wrong');
-      setQuestions(questions.map(q => q.id === activeQuestion.id ? { ...q, isAnswered: true, answeredBy: activeStudentId } : q));
+      
+      // Update question status in Supabase on timeout
+      supabase.from('questions').update({ 
+        is_answered: true, 
+        answered_by: activeStudentId 
+      }).eq('id', activeQuestion.id).then(() => {
+        setQuestions(questions.map(q => q.id === activeQuestion.id ? { ...q, isAnswered: true, answeredBy: activeStudentId } : q));
+      }).catch(err => console.error("Error updating timeout:", err));
+      
       setTimeout(() => closeQuestionModal(), 2000);
     }
     return () => clearInterval(timer);
   }, [isTimerRunning, timeLeft, activeQuestion, activeStudentId, questions]);
 
-  const saveEditedQuestion = (e: React.FormEvent) => {
+  const saveEditedQuestion = async (e: React.FormEvent) => {
     e.preventDefault();
-    setQuestions(questions.map(q => q.id === editingQuestion.id ? editingQuestion : q));
-    setEditingQuestion(null);
-    showAlert("Thành công", "Đã lưu câu hỏi!");
+    try {
+      const { error } = await supabase.from('questions').update({
+        text: editingQuestion.text,
+        options: editingQuestion.options,
+        correct_option: editingQuestion.correctOption
+      }).eq('id', editingQuestion.id);
+      
+      if (error) throw error;
+      
+      setQuestions(questions.map(q => q.id === editingQuestion.id ? editingQuestion : q));
+      setEditingQuestion(null);
+      showAlert("Thành công", "Đã lưu câu hỏi!");
+    } catch (error) {
+      console.error("Error saving question:", error);
+      showAlert("Lỗi", "Không thể lưu câu hỏi.");
+    }
   };
 
   const topStudents = [...students].sort((a, b) => b.score - a.score).slice(0, 3);
@@ -278,6 +533,15 @@ export default function App() {
     if (!scoreGroups[s.score]) scoreGroups[s.score] = [];
     scoreGroups[s.score].push(s.id);
   });
+
+  if (isLoading) {
+    return (
+      <div className="h-screen w-full flex flex-col items-center justify-center bg-slate-50">
+        <div className="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-blue-600 mb-4"></div>
+        <p className="text-slate-600 font-semibold">Đang tải dữ liệu từ máy chủ...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="h-screen w-full font-sans flex flex-col overflow-hidden bg-slate-50">
