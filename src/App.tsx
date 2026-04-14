@@ -335,7 +335,8 @@ export default function App() {
       const { data, error } = await supabase.from('students').insert([{ 
         class_id: currentClass.id, 
         name: studentNameInput.trim(), 
-        score: 0 
+        score: 0,
+        answered_questions: []
       }]).select().single();
       
       if (error) throw error;
@@ -373,7 +374,8 @@ export default function App() {
         const newStudentsData = newNames.map(name => ({
           class_id: currentClass.id,
           name: name.trim(),
-          score: 0
+          score: 0,
+          answered_questions: []
         }));
         
         const { data, error } = await supabase.from('students').insert(newStudentsData).select();
@@ -461,11 +463,14 @@ export default function App() {
   };
 
   const handleResetQuestions = () => { 
-    showConfirm("Xác nhận", "Làm mới trạng thái tất cả câu hỏi?", async () => {
+    const currentClass = classesList.find(c => c.name === className);
+    if (!currentClass) return;
+
+    showConfirm("Xác nhận", "Làm mới trạng thái tất cả câu hỏi của lớp này?", async () => {
       try {
-        const { error } = await supabase.from('questions').update({ is_answered: false, answered_by: null }).eq('user_id', session.user.id);
+        const { error } = await supabase.from('students').update({ answered_questions: [] }).eq('class_id', currentClass.id);
         if (error) throw error;
-        setQuestions(questions.map(q => ({...q, isAnswered: false, answeredBy: null})));
+        setStudents(students.map(s => ({...s, answered_questions: []})));
       } catch (error) {
         console.error("Error resetting questions:", error);
         showAlert("Lỗi", "Không thể làm mới câu hỏi.");
@@ -483,8 +488,10 @@ export default function App() {
   };
 
   const openQuestion = (question: any) => {
-    if (question.isAnswered) return;
     if (!activeStudentId) { showAlert("Thông báo", "Vui lòng chọn một học sinh trước khi chọn câu hỏi!"); return; }
+    const activeStudent = students.find(s => s.id === activeStudentId);
+    if (activeStudent?.answered_questions?.includes(question.id)) return;
+    
     setActiveQuestion(question);
     setTimeLeft(timerSetting);
     setIsTimerRunning(true);
@@ -498,27 +505,26 @@ export default function App() {
     const isCorrect = selectedIndex === activeQuestion.correctOption;
     
     try {
+      const student = students.find(s => s.id === activeStudentId);
+      if (!student) throw new Error("No active student");
+
+      const newScore = isCorrect ? student.score + 10 : student.score;
+      const newAnswered = [...(student.answered_questions || []), activeQuestion.id];
+
       if (isCorrect) {
         sounds.correct(); sounds.congrats(); setShowResultFeedback('correct');
-        
-        // Update student score in Supabase
-        const student = students.find(s => s.id === activeStudentId);
-        if (student) {
-          const newScore = student.score + 10;
-          await supabase.from('students').update({ score: newScore }).eq('id', activeStudentId);
-          setStudents(students.map(s => s.id === activeStudentId ? { ...s, score: newScore } : s));
-        }
       } else {
         sounds.wrong(); setShowResultFeedback('wrong');
       }
       
-      // Update question status in Supabase
-      await supabase.from('questions').update({ 
-        is_answered: true, 
-        answered_by: activeStudentId 
-      }).eq('id', activeQuestion.id);
+      // Update student in Supabase
+      await supabase.from('students').update({ 
+        score: newScore,
+        answered_questions: newAnswered
+      }).eq('id', activeStudentId);
       
-      setQuestions(questions.map(q => q.id === activeQuestion.id ? { ...q, isAnswered: true, answeredBy: activeStudentId } : q));
+      setStudents(students.map(s => s.id === activeStudentId ? { ...s, score: newScore, answered_questions: newAnswered } : s));
+      
     } catch (error) {
       console.error("Error updating answer:", error);
       showAlert("Lỗi", "Không thể lưu kết quả câu trả lời.");
@@ -535,18 +541,20 @@ export default function App() {
       setIsTimerRunning(false);
       sounds.wrong(); setShowResultFeedback('wrong');
       
-      // Update question status in Supabase on timeout
-      supabase.from('questions').update({ 
-        is_answered: true, 
-        answered_by: activeStudentId 
-      }).eq('id', activeQuestion.id).then(() => {
-        setQuestions(questions.map(q => q.id === activeQuestion.id ? { ...q, isAnswered: true, answeredBy: activeStudentId } : q));
-      }).catch(err => console.error("Error updating timeout:", err));
+      const student = students.find(s => s.id === activeStudentId);
+      if (student) {
+        const newAnswered = [...(student.answered_questions || []), activeQuestion.id];
+        supabase.from('students').update({ 
+          answered_questions: newAnswered 
+        }).eq('id', activeStudentId).then(() => {
+          setStudents(students.map(s => s.id === activeStudentId ? { ...s, answered_questions: newAnswered } : s));
+        }).catch(err => console.error("Error updating timeout:", err));
+      }
       
       setTimeout(() => closeQuestionModal(), 2000);
     }
     return () => clearInterval(timer);
-  }, [isTimerRunning, timeLeft, activeQuestion, activeStudentId, questions]);
+  }, [isTimerRunning, timeLeft, activeQuestion, activeStudentId, students]);
 
   const saveEditedQuestion = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -864,15 +872,18 @@ export default function App() {
             {/* GRID CÂU HỎI */}
             <div className="flex-1 p-4 sm:p-6 flex items-center justify-center overflow-y-auto custom-scrollbar bg-slate-50/50">
               <div className="grid grid-cols-6 sm:grid-cols-8 md:grid-cols-10 gap-3 sm:gap-4 justify-items-center w-full max-w-5xl mx-auto">
-                {questions.map((q) => (
+                {questions.map((q) => {
+                  const activeStudent = students.find(s => s.id === activeStudentId);
+                  const isAnswered = activeStudent?.answered_questions?.includes(q.id) || false;
+                  return (
                   <button
                     key={q.id}
                     onClick={() => openQuestion(q)}
                     onMouseEnter={sounds.hover}
-                    disabled={q.isAnswered}
+                    disabled={isAnswered}
                     className={`
                       w-14 h-14 sm:w-16 sm:h-16 rounded-2xl flex items-center justify-center transition-all duration-200 relative overflow-hidden group
-                      ${q.isAnswered 
+                      ${isAnswered 
                         ? 'bg-slate-100 border border-slate-200 cursor-not-allowed opacity-50 grayscale' 
                         : 'bg-white border-2 border-blue-100 hover:border-blue-500 hover:-translate-y-1 hover:shadow-md cursor-pointer shadow-sm'}
                     `}
@@ -887,7 +898,7 @@ export default function App() {
                       {q.displayNumber}
                     </div>
                   </button>
-                ))}
+                )})}
               </div>
             </div>
 
@@ -1089,7 +1100,7 @@ export default function App() {
           <div className="flex flex-col md:flex-row flex-1 overflow-hidden">
             <div className="w-full md:w-[300px] border-r border-slate-200 overflow-y-auto bg-white custom-scrollbar p-4">
               <div className="grid grid-cols-4 md:grid-cols-1 gap-2">
-                {questions.sort((a,b) => a.id - b.id).map(q => (
+                {[...questions].sort((a,b) => a.displayNumber - b.displayNumber).map(q => (
                   <button 
                     key={q.id} 
                     onClick={() => setEditingQuestion({...q})} 
@@ -1099,7 +1110,7 @@ export default function App() {
                         : 'bg-white border-slate-100 hover:border-slate-300 text-slate-600'
                     }`}
                   >
-                    Câu {q.id}
+                    Câu {q.displayNumber}
                   </button>
                 ))}
               </div>
@@ -1108,7 +1119,7 @@ export default function App() {
               {editingQuestion ? (
                 <form onSubmit={saveEditedQuestion} className="max-w-3xl mx-auto bg-white p-8 rounded-3xl shadow-sm border border-slate-200">
                   <h3 className="text-2xl font-bold text-slate-800 mb-6 flex items-center gap-2">
-                    <span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-lg text-lg">Câu {editingQuestion.id}</span>
+                    <span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-lg text-lg">Câu {editingQuestion.displayNumber}</span>
                     Chỉnh sửa nội dung
                   </h3>
                   
