@@ -7,7 +7,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Volume2, VolumeX, Plus, Trash2, Users, Search, 
   Download, RefreshCw, Shuffle, Settings, X, Check,
-  Trophy, Clock, Target, Save
+  Trophy, Clock, Target, Save, LogOut
 } from 'lucide-react';
 import { supabase } from './lib/supabase';
 
@@ -67,22 +67,46 @@ const generateInitialQuestions = () => {
 };
 
 export default function App() {
-  // --- STATE ---
+  // --- AUTH STATE ---
+  const [session, setSession] = useState<any>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [isLoginMode, setIsLoginMode] = useState(true);
+  const [authError, setAuthError] = useState('');
+
+  // --- APP STATE ---
   const [classData, setClassData] = useState<Record<string, any[]>>({});
   const [className, setClassName] = useState("");
   const [classesList, setClassesList] = useState<any[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
   
   const students = classData[className] || [];
+
+  // Listen for auth changes
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setIsAuthLoading(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
   
   // Fetch initial data from Supabase
   useEffect(() => {
+    if (!session) return;
+
     const fetchInitialData = async () => {
       try {
         setIsLoading(true);
         
         // Fetch Settings
-        const { data: settingsData } = await supabase.from('settings').select('*').single();
+        const { data: settingsData } = await supabase.from('settings').select('*').eq('user_id', session.user.id).single();
         if (settingsData) {
           setTimerSetting(settingsData.timer_setting || 10);
           setInputTimer(settingsData.timer_setting || 10);
@@ -90,7 +114,7 @@ export default function App() {
         }
 
         // Fetch Classes
-        const { data: classesData, error: classesError } = await supabase.from('classes').select('*').order('created_at', { ascending: true });
+        const { data: classesData, error: classesError } = await supabase.from('classes').select('*').eq('user_id', session.user.id).order('created_at', { ascending: true });
         if (classesError) throw classesError;
         
         if (classesData && classesData.length > 0) {
@@ -98,7 +122,7 @@ export default function App() {
           const firstClassName = classesData[0].name;
           setClassName(firstClassName);
           
-          // Fetch Students
+          // Fetch Students (filtered by class_id later, but RLS ensures we only get our students)
           const { data: studentsData, error: studentsError } = await supabase.from('students').select('*');
           if (studentsError) throw studentsError;
           
@@ -109,7 +133,7 @@ export default function App() {
           setClassData(newClassData);
         } else {
           // If no classes exist, create default '9B'
-          const { data: newClass } = await supabase.from('classes').insert([{ name: '9B' }]).select().single();
+          const { data: newClass } = await supabase.from('classes').insert([{ name: '9B', user_id: session.user.id }]).select().single();
           if (newClass) {
             setClassesList([newClass]);
             setClassName('9B');
@@ -118,7 +142,7 @@ export default function App() {
         }
 
         // Fetch Questions
-        const { data: questionsData, error: questionsError } = await supabase.from('questions').select('*').order('display_number', { ascending: true });
+        const { data: questionsData, error: questionsError } = await supabase.from('questions').select('*').eq('user_id', session.user.id).order('display_number', { ascending: true });
         if (questionsError) throw questionsError;
         
         if (questionsData && questionsData.length > 0) {
@@ -161,7 +185,8 @@ export default function App() {
             options: q.options,
             correct_option: q.correctOption,
             is_answered: q.isAnswered,
-            answered_by: q.answeredBy
+            answered_by: q.answeredBy,
+            user_id: session.user.id
           }));
           const { data: insertedQs } = await supabase.from('questions').insert(dbQuestions).select();
           if (insertedQs) {
@@ -186,7 +211,7 @@ export default function App() {
     };
 
     fetchInitialData();
-  }, []);
+  }, [session]);
 
   // Update setStudents to also update Supabase (for local state updates that don't need immediate DB sync, we'll handle DB sync separately)
   const setStudents = useCallback((action: any) => {
@@ -257,7 +282,7 @@ export default function App() {
       const trimmedName = newClassNameInput.trim();
       if (!classData[trimmedName]) {
         try {
-          const { data, error } = await supabase.from('classes').insert([{ name: trimmedName }]).select().single();
+          const { data, error } = await supabase.from('classes').insert([{ name: trimmedName, user_id: session.user.id }]).select().single();
           if (error) throw error;
           if (data) {
             setClassesList(prev => [...prev, data]);
@@ -409,7 +434,7 @@ export default function App() {
 
   const handleSetTimer = async () => { 
     try {
-      const { error } = await supabase.from('settings').upsert({ id: 1, timer_setting: inputTimer, target_score: targetScore });
+      const { error } = await supabase.from('settings').upsert({ user_id: session.user.id, timer_setting: inputTimer, target_score: targetScore }, { onConflict: 'user_id' });
       if (error) throw error;
       setTimerSetting(inputTimer); 
       showAlert("Thành công", `Đã cài đặt thời gian: ${inputTimer} giây`); 
@@ -438,7 +463,7 @@ export default function App() {
   const handleResetQuestions = () => { 
     showConfirm("Xác nhận", "Làm mới trạng thái tất cả câu hỏi?", async () => {
       try {
-        const { error } = await supabase.from('questions').update({ is_answered: false, answered_by: null }).neq('id', '00000000-0000-0000-0000-000000000000'); // Update all
+        const { error } = await supabase.from('questions').update({ is_answered: false, answered_by: null }).eq('user_id', session.user.id);
         if (error) throw error;
         setQuestions(questions.map(q => ({...q, isAnswered: false, answeredBy: null})));
       } catch (error) {
@@ -552,6 +577,87 @@ export default function App() {
     if (!scoreGroups[s.score]) scoreGroups[s.score] = [];
     scoreGroups[s.score].push(s.id);
   });
+
+  const handleAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError('');
+    try {
+      if (isLoginMode) {
+        const { error } = await supabase.auth.signInWithPassword({ email: authEmail, password: authPassword });
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.auth.signUp({ email: authEmail, password: authPassword });
+        if (error) throw error;
+        showAlert("Thành công", "Đăng ký thành công! Vui lòng đăng nhập.");
+        setIsLoginMode(true);
+      }
+    } catch (err: any) {
+      setAuthError(err.message || "Đã xảy ra lỗi xác thực.");
+    }
+  };
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+  };
+
+  if (isAuthLoading) {
+    return (
+      <div className="h-screen w-full flex flex-col items-center justify-center bg-slate-50">
+        <div className="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-blue-600 mb-4"></div>
+        <p className="text-slate-600 font-semibold">Đang kiểm tra đăng nhập...</p>
+      </div>
+    );
+  }
+
+  if (!session) {
+    return (
+      <div className="h-screen w-full flex items-center justify-center bg-slate-100 p-4">
+        <div className="bg-white p-8 rounded-3xl shadow-xl w-full max-w-md border border-slate-200">
+          <div className="flex justify-center mb-6">
+            <Trophy className="text-yellow-500" size={48} />
+          </div>
+          <h2 className="text-2xl font-black text-center text-slate-800 mb-6 uppercase tracking-tight">
+            {isLoginMode ? 'Đăng nhập' : 'Đăng ký tài khoản'}
+          </h2>
+          {authError && (
+            <div className="bg-red-50 text-red-600 p-3 rounded-xl text-sm font-medium mb-4 border border-red-200">
+              {authError}
+            </div>
+          )}
+          <form onSubmit={handleAuth} className="space-y-4">
+            <div>
+              <label className="block text-sm font-bold text-slate-700 mb-1">Email</label>
+              <input 
+                type="email" 
+                value={authEmail} 
+                onChange={(e) => setAuthEmail(e.target.value)} 
+                className="w-full px-4 py-2 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" 
+                required 
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-bold text-slate-700 mb-1">Mật khẩu</label>
+              <input 
+                type="password" 
+                value={authPassword} 
+                onChange={(e) => setAuthPassword(e.target.value)} 
+                className="w-full px-4 py-2 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" 
+                required 
+              />
+            </div>
+            <button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-xl shadow-md transition-colors mt-2">
+              {isLoginMode ? 'Đăng nhập' : 'Đăng ký'}
+            </button>
+          </form>
+          <div className="mt-6 text-center">
+            <button onClick={() => setIsLoginMode(!isLoginMode)} className="text-blue-600 hover:underline text-sm font-semibold">
+              {isLoginMode ? 'Chưa có tài khoản? Đăng ký ngay' : 'Đã có tài khoản? Đăng nhập'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (isLoading) {
     return (
@@ -724,6 +830,9 @@ export default function App() {
                  </button>
                  <button onClick={() => setIsManagementMode(true)} className="bg-slate-800 hover:bg-slate-900 text-white px-3 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition-colors flex items-center gap-1.5 shrink-0 whitespace-nowrap ml-auto">
                    <Settings size={14} /> Quản lý
+                 </button>
+                 <button onClick={handleLogout} className="bg-red-50 hover:bg-red-100 text-red-600 px-3 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition-colors flex items-center gap-1.5 shrink-0 whitespace-nowrap">
+                   <LogOut size={14} /> Đăng xuất
                  </button>
                </div>
             </div>
