@@ -122,8 +122,27 @@ export default function App() {
         if (questionsError) throw questionsError;
         
         if (questionsData && questionsData.length > 0) {
+          // Lọc bỏ các câu hỏi bị trùng lặp (do React Strict Mode gọi useEffect 2 lần khi khởi tạo)
+          const uniqueQuestions: any[] = [];
+          const seenNumbers = new Set();
+          const duplicateIds: string[] = [];
+
+          questionsData.forEach(q => {
+            if (!seenNumbers.has(q.display_number)) {
+              seenNumbers.add(q.display_number);
+              uniqueQuestions.push(q);
+            } else {
+              duplicateIds.push(q.id);
+            }
+          });
+
+          // Xóa các câu hỏi trùng lặp trên Supabase (chạy ngầm)
+          if (duplicateIds.length > 0) {
+            supabase.from('questions').delete().in('id', duplicateIds).then();
+          }
+
           // Map snake_case to camelCase for frontend
-          const formattedQuestions = questionsData.map(q => ({
+          const formattedQuestions = uniqueQuestions.map(q => ({
             id: q.id,
             displayNumber: q.display_number,
             text: q.text,
