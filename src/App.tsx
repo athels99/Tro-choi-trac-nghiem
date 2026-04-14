@@ -7,9 +7,10 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Volume2, VolumeX, Plus, Trash2, Users, Search, 
   Download, RefreshCw, Shuffle, Settings, X, Check,
-  Trophy, Clock, Target, Save
+  Trophy, Clock, Target, Save, LogOut
 } from 'lucide-react';
 import { supabase } from './lib/supabase';
+import { Session } from '@supabase/supabase-js';
 
 // --- TIỆN ÍCH TẠO ÂM THANH (Web Audio API) ---
 let audioCtx: AudioContext | null = null;
@@ -67,16 +68,41 @@ const generateInitialQuestions = () => {
 };
 
 export default function App() {
+  // --- AUTH STATE ---
+  const [session, setSession] = useState<Session | null>(null);
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [isLoginMode, setIsLoginMode] = useState(true);
+  const [authLoading, setAuthLoading] = useState(true);
+
   // --- STATE ---
   const [classData, setClassData] = useState<Record<string, any[]>>({});
   const [className, setClassName] = useState("");
   const [classesList, setClassesList] = useState<any[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
   
   const students = classData[className] || [];
   
+  // Auth Effect
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setAuthLoading(false);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
   // Fetch initial data from Supabase
   useEffect(() => {
+    if (!session) return;
+
     const fetchInitialData = async () => {
       try {
         setIsLoading(true);
@@ -195,7 +221,36 @@ export default function App() {
     };
 
     fetchInitialData();
-  }, []);
+  }, [session]);
+
+  const handleAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthLoading(true);
+    try {
+      if (isLoginMode) {
+        const { error } = await supabase.auth.signInWithPassword({ email: authEmail, password: authPassword });
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.auth.signUp({ email: authEmail, password: authPassword });
+        if (error) throw error;
+        showAlert("Thành công", "Đăng ký thành công! Bạn có thể đăng nhập ngay bây giờ.");
+        setIsLoginMode(true);
+      }
+    } catch (error: any) {
+      console.error("Auth error:", error);
+      showAlert("Lỗi", error.message || "Đã có lỗi xảy ra.");
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setClassData({});
+    setClassesList([]);
+    setQuestions([]);
+    setStudentAnswers({});
+  };
 
   // Update setStudents to also update Supabase (for local state updates that don't need immediate DB sync, we'll handle DB sync separately)
   const setStudents = useCallback((action: any) => {
@@ -419,8 +474,14 @@ export default function App() {
 
   const handleSetTimer = async () => { 
     try {
-      const { error } = await supabase.from('settings').upsert({ id: 1, timer_setting: inputTimer, target_score: targetScore });
-      if (error) throw error;
+      const { data: existing } = await supabase.from('settings').select('id').single();
+      if (existing) {
+        const { error } = await supabase.from('settings').update({ timer_setting: inputTimer, target_score: targetScore }).eq('id', existing.id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.from('settings').insert({ timer_setting: inputTimer, target_score: targetScore });
+        if (error) throw error;
+      }
       setTimerSetting(inputTimer); 
       showAlert("Thành công", `Đã cài đặt thời gian: ${inputTimer} giây`); 
     } catch (error) {
@@ -577,6 +638,69 @@ export default function App() {
     if (!scoreGroups[s.score]) scoreGroups[s.score] = [];
     scoreGroups[s.score].push(s.id);
   });
+
+  if (authLoading) {
+    return (
+      <div className="h-screen w-full flex flex-col items-center justify-center bg-slate-50">
+        <div className="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-blue-600 mb-4"></div>
+        <p className="text-slate-600 font-semibold">Đang kiểm tra phiên đăng nhập...</p>
+      </div>
+    );
+  }
+
+  if (!session) {
+    return (
+      <div className="h-screen w-full flex items-center justify-center bg-slate-50 p-4">
+        <div className="bg-white p-8 rounded-3xl shadow-lg max-w-md w-full border border-slate-100">
+          <div className="text-center mb-8">
+            <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-md">
+              <Trophy className="text-white w-8 h-8" />
+            </div>
+            <h1 className="text-2xl font-black text-slate-800">Đường Lên Đỉnh Olympia</h1>
+            <p className="text-slate-500 mt-2">{isLoginMode ? 'Đăng nhập để quản lý lớp học' : 'Tạo tài khoản mới'}</p>
+          </div>
+          
+          <form onSubmit={handleAuth} className="space-y-4">
+            <div>
+              <label className="block text-sm font-bold text-slate-700 mb-1">Email</label>
+              <input 
+                type="email" 
+                value={authEmail}
+                onChange={e => setAuthEmail(e.target.value)}
+                className="w-full p-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-bold text-slate-700 mb-1">Mật khẩu</label>
+              <input 
+                type="password" 
+                value={authPassword}
+                onChange={e => setAuthPassword(e.target.value)}
+                className="w-full p-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none"
+                required
+              />
+            </div>
+            <button 
+              type="submit" 
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-xl transition-colors mt-6"
+            >
+              {isLoginMode ? 'Đăng Nhập' : 'Đăng Ký'}
+            </button>
+          </form>
+          
+          <div className="mt-6 text-center">
+            <button 
+              onClick={() => setIsLoginMode(!isLoginMode)}
+              className="text-blue-600 hover:text-blue-800 text-sm font-semibold"
+            >
+              {isLoginMode ? 'Chưa có tài khoản? Đăng ký ngay' : 'Đã có tài khoản? Đăng nhập'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (isLoading) {
     return (
@@ -749,6 +873,9 @@ export default function App() {
                  </button>
                  <button onClick={() => setIsManagementMode(true)} className="bg-slate-800 hover:bg-slate-900 text-white px-3 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition-colors flex items-center gap-1.5 shrink-0 whitespace-nowrap ml-auto">
                    <Settings size={14} /> Quản lý
+                 </button>
+                 <button onClick={handleLogout} className="bg-red-50 hover:bg-red-100 text-red-600 px-3 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition-colors flex items-center gap-1.5 shrink-0 whitespace-nowrap">
+                   <LogOut size={14} /> Đăng xuất
                  </button>
                </div>
             </div>
@@ -1027,7 +1154,7 @@ export default function App() {
               {editingQuestion ? (
                 <form onSubmit={saveEditedQuestion} className="max-w-3xl mx-auto bg-white p-8 rounded-3xl shadow-sm border border-slate-200">
                   <h3 className="text-2xl font-bold text-slate-800 mb-6 flex items-center gap-2">
-                    <span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-lg text-lg">Câu {editingQuestion.id}</span>
+                    <span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-lg text-lg">Câu {editingQuestion.displayNumber}</span>
                     Chỉnh sửa nội dung
                   </h3>
                   
